@@ -1,11 +1,12 @@
 import asyncio
 import uuid
+import os
 import random
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
 from pymongo import MongoClient
 
-MONGO_URI = "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0" 
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0") 
 db_client = MongoClient(MONGO_URI)
 try:
     db_client.admin.command('ping')

@@ -1,9 +1,9 @@
 from pymongo import MongoClient
 import sys
+import os
 
 # --- Database Connection ---
-# Using your provided URI for the telegram_farm database
-MONGO_URI = "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0" 
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0") 
 db_client = MongoClient(MONGO_URI)
 
 try:
