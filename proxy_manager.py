@@ -1,6 +1,9 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from pymongo import MongoClient
 import sys
-import os
 
 # --- Database Connection ---
 MONGO_URI = os.environ["MONGO_URI"] 

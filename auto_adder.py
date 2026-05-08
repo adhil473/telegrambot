@@ -1,6 +1,9 @@
 import asyncio
 import os
 import random
+from dotenv import load_dotenv
+load_dotenv()
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telethon import TelegramClient

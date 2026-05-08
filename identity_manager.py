@@ -2,6 +2,9 @@ import asyncio
 import uuid
 import os
 import random
+from dotenv import load_dotenv
+load_dotenv()
+
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
 from pymongo import MongoClient
