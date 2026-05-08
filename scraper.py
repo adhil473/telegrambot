@@ -5,7 +5,7 @@ from telethon.sessions import StringSession
 from pymongo import MongoClient
 
 # --- Database Setup ---
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0")
+MONGO_URI = os.environ["MONGO_URI"]
 db_client = MongoClient(MONGO_URI)
 try:
     db_client.admin.command('ping')

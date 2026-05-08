@@ -5,9 +5,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from pymongo import MongoClient
 
 # --- CONFIGURATION ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8526038419:AAFpYxKaeLjKD8d4676Gskm_LZM_sQO6Cao")
-ADMIN_ID = [int(x) for x in os.environ.get("ADMIN_IDS", "723142636,415137465").split(",")]
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://adhilu260_db_user:eRrfjLS0765RjmIT@cluster0.axenuzr.mongodb.net/?appName=Cluster0")
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_ID = [int(x) for x in os.environ["ADMIN_IDS"].split(",")]
+MONGO_URI = os.environ["MONGO_URI"]
 
 # --- DB CONNECTION ---
 db_client = MongoClient(MONGO_URI)
