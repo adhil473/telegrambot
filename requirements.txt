@@ -1,0 +1,4 @@
+telethon
+pymongo[srv]
+python-telegram-bot
+dnspython
