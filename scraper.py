@@ -21,6 +21,47 @@ db = db_client["telegram_farm"]
 workers_col = db["workers"]
 targets_col = db["targets"]
 
+async def _fetch_groups(client):
+    """Fetch non-broadcast groups/channels from dialogs."""
+    groups = []
+    async for dialog in client.iter_dialogs():
+        if not (dialog.is_group or dialog.is_channel):
+            continue
+        if hasattr(dialog.entity, 'broadcast') and dialog.entity.broadcast:
+            continue
+        groups.append(dialog)
+    return groups
+
+
+async def _scrape_messages(client, target_group, limit=1000):
+    """Scrape active users with usernames from group messages."""
+    active_users = {}
+    async for message in client.iter_messages(target_group, limit=limit):
+        if not message.sender_id:
+            continue
+        user = await message.get_sender()
+        if not (user and hasattr(user, 'username') and user.username):
+            continue
+        active_users[user.id] = {
+            "user_id": user.id,
+            "username": user.username,
+            "name": f"{getattr(user, 'first_name', '')}".strip(),
+            "source": target_group.name,
+            "status": "PENDING"
+        }
+    return active_users
+
+
+def _save_targets(active_users):
+    """Save scraped users to MongoDB with upsert."""
+    for target in active_users.values():
+        targets_col.update_one(
+            {"user_id": target["user_id"]},
+            {"$set": target},
+            upsert=True
+        )
+
+
 async def run_scraper(group_index=None):
     """
     If group_index is None: Returns the list of groups for the bot to display.
@@ -28,15 +69,12 @@ async def run_scraper(group_index=None):
     """
     print(f"[SCRAPER] run_scraper called with group_index={group_index}")
 
-    # 1. Pull a Healthy Worker
     worker = workers_col.find_one({"status": "HEALTHY", "proxy": {"$ne": None}})
-    
     if not worker:
         return "[FAIL] No healthy, shielded workers found."
 
     print(f"[SCRAPER] Using worker: {worker['phone']}")
 
-    # 2. Client Setup
     client = TelegramClient(
         StringSession(worker['session_str']),
         worker['api_id'],
@@ -53,68 +91,36 @@ async def run_scraper(group_index=None):
             await client.disconnect()
             return "[FAIL] Worker session expired. Re-register with identity_manager.py"
 
-        # Sync session
         await client.get_dialogs(limit=1)
-        
-        # 3. Fetch Dialogs
-        groups = []
-        async for dialog in client.iter_dialogs():
-            if dialog.is_group or dialog.is_channel:
-                if hasattr(dialog.entity, 'broadcast') and dialog.entity.broadcast:
-                    continue
-                groups.append(dialog)
+        groups = await _fetch_groups(client)
 
-        # If no index provided, return the group list to the Master Bot
         if group_index is None:
             await client.disconnect()
             print(f"[SCRAPER] Returning {len(groups)} groups")
             return groups
 
-        # If index provided, attempt to scrape
         try:
             target_group = groups[int(group_index)]
         except (ValueError, IndexError):
             await client.disconnect()
             return "[FAIL] Invalid group selection. Use /scrape to see the list."
 
-        # 5. The Scrape
-        limit = 1000
-        active_users = {}
-        print(f"[SCRAPER] Scraping '{target_group.name}' (limit={limit})...")
-
-        async for message in client.iter_messages(target_group, limit=limit):
-            if message.sender_id:
-                user = await message.get_sender()
-                if user and hasattr(user, 'username') and user.username:
-                    active_users[user.id] = {
-                        "user_id": user.id,
-                        "username": user.username,
-                        "name": f"{getattr(user, 'first_name', '')}".strip(),
-                        "source": target_group.name,
-                        "status": "PENDING"
-                    }
-
+        print(f"[SCRAPER] Scraping '{target_group.name}'...")
+        active_users = await _scrape_messages(client, target_group)
         await client.disconnect()
 
-        # 6. Database Save
-        if active_users:
-            new_targets = list(active_users.values())
-            for target in new_targets:
-                targets_col.update_one(
-                    {"user_id": target["user_id"]},
-                    {"$set": target},
-                    upsert=True
-                )
-            print(f"[SCRAPER] Harvested {len(active_users)} users")
-            return f"[OK] Harvested {len(active_users)} users from {target_group.name}"
-        else:
+        if not active_users:
             return f"[!] No active users with usernames found in {target_group.name}."
+
+        _save_targets(active_users)
+        print(f"[SCRAPER] Harvested {len(active_users)} users")
+        return f"[OK] Harvested {len(active_users)} users from {target_group.name}"
 
     except Exception as e:
         print(f"[SCRAPER] Error: {e}")
         try:
             await client.disconnect()
-        except:
+        except Exception:
             pass
         return f"[FAIL] Unexpected Error: {str(e)}"
 

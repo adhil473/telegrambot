@@ -22,13 +22,10 @@ db_client = MongoClient(MONGO_URI)
 db = db_client["telegram_farm"]
 
 # --- Auto-Adder Logic ---
-async def run_auto_adder(target_group):
-    """Rotates through workers to add pending targets to the given group."""
-    print(f"[ADDER] run_auto_adder called for {target_group}")
-
-    # Atomically claim targets to prevent double-adds
+def _claim_targets(limit=50):
+    """Atomically claim PENDING targets to prevent double-adds."""
     targets = []
-    for _ in range(50):
+    for _ in range(limit):
         target = db["targets"].find_one_and_update(
             {"status": "PENDING"},
             {"$set": {"status": "IN_PROGRESS"}},
@@ -36,19 +33,69 @@ async def run_auto_adder(target_group):
         if not target:
             break
         targets.append(target)
+    return targets
 
+
+def _release_targets(targets):
+    """Release unclaimed targets back to PENDING."""
+    for t in targets:
+        db["targets"].update_one({"_id": t["_id"]}, {"$set": {"status": "PENDING"}})
+
+
+def _handle_add_error(error_msg, worker, target):
+    """Handle invite errors and update DB accordingly. Returns True if worker should stop."""
+    if "PeerFloodError" in error_msg or "UserDeactivated" in error_msg:
+        db["workers"].update_one({"_id": worker["_id"]}, {"$set": {"status": "COOLDOWN"}})
+        return True
+    if "UserPrivacyRestrictedError" in error_msg:
+        db["targets"].update_one({"_id": target["_id"]}, {"$set": {"status": "PRIVACY_RESTRICTED"}})
+    return False
+
+
+async def _add_with_worker(client, worker, targets, target_group, limit_per_worker):
+    """Use a single worker to add targets. Returns count of successful adds."""
+    added = 0
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        print(f"[ADDER] Worker {worker['phone']} session expired")
+        return added
+
+    for _ in range(limit_per_worker):
+        if not targets:
+            break
+        target = targets.pop(0)
+        try:
+            print(f"[ADDER] Adding {target['username']}...")
+            await client(InviteToChannelRequest(target_group, [target['username']]))
+            db["targets"].update_one({"_id": target["_id"]}, {"$set": {"status": "COMPLETED"}})
+            added += 1
+            await asyncio.sleep(random.randint(60, 120))
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[ADDER] Error adding {target['username']}: {error_msg}")
+            if _handle_add_error(error_msg, worker, target):
+                break
+
+    await client.disconnect()
+    return added
+
+
+async def run_auto_adder(target_group):
+    """Rotates through workers to add pending targets to the given group."""
+    print(f"[ADDER] run_auto_adder called for {target_group}")
+
+    targets = _claim_targets()
     workers = list(db["workers"].find({"status": "HEALTHY", "proxy": {"$ne": None}}))
 
     if not targets:
         return "[FAIL] No pending targets. Run /scrape first."
     if not workers:
-        for t in targets:
-            db["targets"].update_one({"_id": t["_id"]}, {"$set": {"status": "PENDING"}})
+        _release_targets(targets)
         return "[FAIL] No healthy workers available."
 
     print(f"[ADDER] {len(targets)} targets, {len(workers)} workers")
     added = 0
-    limit_per_worker = 5
 
     for worker in workers:
         if not targets:
@@ -66,46 +113,16 @@ async def run_auto_adder(target_group):
         )
 
         try:
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                print(f"[ADDER] Worker {worker['phone']} session expired")
-                continue
-
-            for _ in range(limit_per_worker):
-                if not targets:
-                    break
-                target = targets.pop(0)
-                try:
-                    print(f"[ADDER] Adding {target['username']}...")
-                    await client(InviteToChannelRequest(target_group, [target['username']]))
-                    db["targets"].update_one({"_id": target["_id"]}, {"$set": {"status": "COMPLETED"}})
-                    added += 1
-                    await asyncio.sleep(random.randint(60, 120))
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"[ADDER] Error adding {target['username']}: {error_msg}")
-                    if "PeerFloodError" in error_msg or "UserDeactivated" in error_msg:
-                        db["workers"].update_one({"_id": worker["_id"]}, {"$set": {"status": "COOLDOWN"}})
-                        break
-                    if "UserPrivacyRestrictedError" in error_msg:
-                        db["targets"].update_one({"_id": target["_id"]}, {"$set": {"status": "PRIVACY_RESTRICTED"}})
-
-            await client.disconnect()
-
+            added += await _add_with_worker(client, worker, targets, target_group, 5)
         except (ConnectionError, asyncio.TimeoutError) as e:
             print(f"[ADDER] Proxy expired for {worker['phone']}: {e}")
             db["workers"].update_one({"_id": worker["_id"]}, {"$set": {"proxy_status": "EXPIRED"}})
             try:
                 await client.disconnect()
-            except:
+            except Exception:
                 pass
-            continue
 
-    # Release any unclaimed targets back to PENDING
-    for t in targets:
-        db["targets"].update_one({"_id": t["_id"]}, {"$set": {"status": "PENDING"}})
-
+    _release_targets(targets)
     print(f"[ADDER] Done. Added {added} members.")
     return f"[OK] Added {added} members to {target_group}"
 
