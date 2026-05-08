@@ -3,3 +3,4 @@ pymongo[srv]
 python-telegram-bot
 dnspython
 python-dotenv
+pysocks
