@@ -3,11 +3,11 @@ import os
 import random
 import uuid
 import concurrent.futures
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder, 
     CommandHandler, 
@@ -23,7 +23,7 @@ from scraper import run_scraper
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_ID = [int(x) for x in os.environ["ADMIN_IDS"].split(",")]
+ADMIN_ID = [int(x.strip()) for x in os.environ["ADMIN_IDS"].split(",")]
 MONGO_URI = os.environ["MONGO_URI"]
 
 # --- DB CONNECTION ---
@@ -33,7 +33,7 @@ db = db_client["telegram_farm"]
 # --- CONVERSATION STATES ---
 CHOOSING_CREDENTIALS, WAITING_FOR_OTP = range(2)
 
-# --- THREAD POOL FOR ISOLATING TELETHON LOOP COLLISIONS ---
+# --- THREAD POOL FOR TELETHON ---
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 # --- SERVICE NOTIFICATION HELPER ---
@@ -57,7 +57,6 @@ def generate_s23_identity():
 
 # --- THREAD-ISOLATED TELETHON TASKS ---
 def _th_request_otp(session_str, api_id, api_hash, phone, identity):
-    """Executes the core connection handshake in an isolated runtime loop."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -81,7 +80,6 @@ def _th_request_otp(session_str, api_id, api_hash, phone, identity):
         loop.close()
 
 def _th_verify_otp(session_str, api_id, api_hash, phone, otp_code, phone_code_hash, identity):
-    """Verifies the input login code within an isolated thread context."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -105,16 +103,14 @@ def _th_verify_otp(session_str, api_id, api_hash, phone, otp_code, phone_code_ha
     finally:
         loop.close()
 
-# --- AUTOMATED PROXY HEALTH MONITOR (BACKGROUND ENGINE) ---
+# --- AUTOMATED PROXY HEALTH MONITOR ---
 async def run_proxy_heartbeat_check(bot):
-    """Automated worker validation daemon checking connection state health bounds."""
     while True:
         print("[HEARTBEAT] Commencing periodic connectivity health sweep...")
         workers = list(db.workers.find({"status": "HEALTHY", "proxy": {"$ne": None}}))
         
         for worker in workers:
             phone = worker.get("phone", "Unknown")
-            
             client = TelegramClient(
                 StringSession(worker['session_str']),
                 worker['api_id'],
@@ -125,24 +121,19 @@ async def run_proxy_heartbeat_check(bot):
                 connection_retries=0, 
                 timeout=10
             )
-            
             try:
                 start_time = datetime.now()
                 await client.connect()
                 await client.get_me() 
                 latency = (datetime.now() - start_time).total_seconds()
-                
                 print(f"[HEARTBEAT] {phone} -> Proxy Validated ({latency:.2f}s latency)")
                 await client.disconnect()
-                
             except Exception as e:
                 print(f"[HEARTBEAT ALERT] Worker {phone} connection dropped: {e}")
-                
                 db.workers.update_one(
                     {"_id": worker["_id"]},
                     {"$set": {"proxy_status": "DEAD_OR_EXPIRED", "proxy_last_checked": datetime.now()}}
                 )
-                
                 alert_msg = (
                     f"⚠️ <b>PROXY BREAKDOWN ALERT</b>\n\n"
                     f"📱 <b>Worker Account:</b> <code>{phone}</code>\n"
@@ -150,18 +141,17 @@ async def run_proxy_heartbeat_check(bot):
                     f"💡 <i>Action: Extraction line expired. Execute proxy_manager.py script soon.</i>"
                 )
                 await send_system_log(bot, alert_msg)
-                
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
-                    
-        await asyncio.sleep(600)  # Verify status loops every 10 minutes
+        await asyncio.sleep(600)
 
 # --- CORE ADMINISTRATIVE COMMANDS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_ID: 
+        return
     await update.message.reply_text(
         "⚡ <b>Farm Controller Online</b>\n\n"
         "Available Commands:\n"
@@ -173,8 +163,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_ID: return
-    
+    if update.effective_user.id not in ADMIN_ID: 
+        return
     try:
         healthy = db.workers.count_documents({"status": "HEALTHY"})
         pending = db.targets.count_documents({"status": "PENDING"})
@@ -204,12 +194,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"[ERROR] Metrics aggregation failed: {e}")
 
 async def force_proxy_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_ID: 
+        return
     await update.message.reply_text("⚡ <i>Forcing manual proxy fleet health test... Check log notifications shortly.</i>", parse_mode='HTML')
     asyncio.create_task(send_system_log(context.bot, "📊 <b>Manual Proxy Scan Started...</b>"))
 
 async def scrape_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_ID: 
+        return
     try:
         if not context.args:
             await update.message.reply_text("Fetching your group list...")
@@ -227,10 +219,8 @@ async def scrape_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             idx = context.args[0]
             await send_system_log(context.bot, f"🚀 <b>HARVEST ENGINE LIVE</b>\nTarget Index: {idx}\nStatus: Processing data blocks...")
-            
             result = await run_scraper(group_index=idx)
             await update.message.reply_text(str(result))
-            
             await send_system_log(context.bot, f"✅ <b>HARVEST COMPLETED</b>\nTarget Index: {idx}\nDatabase elements successfully cached.")
     except Exception as e:
         await update.message.reply_text(f"[ERROR] Scrape engine failure: {e}")
@@ -238,7 +228,10 @@ async def scrape_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- WORKER ONBOARDING WIZARD HANDLERS ---
 
 async def start_add_worker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_ID: return ConversationHandler.END
+    if update.effective_user.id not in ADMIN_ID: 
+        await update.message.reply_text(f"❌ Access Denied. Your User ID ({update.effective_user.id}) is unauthorized.")
+        return ConversationHandler.END
+        
     await update.message.reply_text(
         "📝 <b>Worker Registration Wizard Active</b>\n\n"
         "Send your login details exactly in this layout:\n"
@@ -261,7 +254,6 @@ async def process_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE
         identity = generate_s23_identity()
         string_session = StringSession()
         
-        # Offload structural handshake block to protected executor pool
         current_loop = asyncio.get_running_loop()
         phone_code_hash = await current_loop.run_in_executor(
             executor, 
@@ -334,7 +326,16 @@ async def main():
     await app.initialize()
     await app.start()
     
-    # Run background proxy status validations concurrently without bottleneck loops
+    # Register commands with Telegram UI Menu
+    ui_commands = [
+        BotCommand("start", "Show available control commands"),
+        BotCommand("status", "Detailed Fleet Breakdown & Analytics"),
+        BotCommand("add_worker", "Onboard a new account via chat"),
+        BotCommand("scrape", "List groups / Scrape a group"),
+        BotCommand("test_proxies", "Force manual proxy fleet health check")
+    ]
+    await app.bot.set_my_commands(ui_commands)
+    
     asyncio.create_task(run_proxy_heartbeat_check(app.bot))
     
     print("[BOT] Master Controller Engine is actively processing events...")
